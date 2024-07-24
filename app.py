@@ -8,6 +8,12 @@ from typing import List
 import os
 import json
 from uuid import uuid4
+import boto3
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
 
 # 모델 경로 설정
 model_path = os.path.abspath('./modelnew.h5')
@@ -19,6 +25,25 @@ except Exception as e:
     raise RuntimeError(f"Error loading model: {str(e)}")
 
 app = FastAPI()
+
+# AWS S3 설정
+s3 = boto3.client('s3')
+BUCKET_NAME = 'poksin'
+DIRECTORY = 'video/'
+
+def upload_to_s3(file_path, bucket, s3_file_name):
+    try:
+        s3.upload_file(file_path, bucket, s3_file_name)
+        s3_url = f"https://{bucket}.s3.amazonaws.com/{s3_file_name}"
+        return s3_url
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="File not found.")
+    except NoCredentialsError:
+        raise HTTPException(status_code=500, detail="Credentials not available.")
+    except PartialCredentialsError:
+        raise HTTPException(status_code=500, detail="Incomplete credentials provided.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 비디오 읽기 함수 (1초당 5프레임만 추출)
 def read_video(video_path):
@@ -134,18 +159,26 @@ def process_video(video_path, model, result_file_path):
             end_frame = min(end_frame + int(fps), len(original_frames) - 1)
         
         duration = (end_frame - start_frame + 1) / fps  # 원본 프레임 기준 지속 시간 계산
+        
+        s3_file_name = f"{DIRECTORY}{uuid4()}.mp4"
+        s3_url = upload_to_s3(saved_segments[idx], BUCKET_NAME, s3_file_name)
+        
         segments_info.append({
             "segment_index": idx + 1,
             "start_frame": start_frame,
             "end_frame": end_frame,
             "duration": duration,
-            "file_path": saved_segments[idx]
+            "s3_url": s3_url
         })
     
     with open(result_file_path, 'w') as f:
         json.dump({"segments": segments_info}, f)
+    
+    # 로컬 파일 삭제
+    for file_path in saved_segments:
+        os.remove(file_path)
 
-@app.post("/detect_violence/")
+@app.post("/detect-violence/")
 async def detect_violence_in_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     try:
         temp_dir = os.path.join(os.getcwd(), 'temp')
@@ -158,9 +191,16 @@ async def detect_violence_in_video(background_tasks: BackgroundTasks, file: Uplo
         with open(video_path, 'wb') as f:
             f.write(await file.read())
         
+        # 업로드한 원본 비디오를 S3에 저장
+        s3_file_name = f"{DIRECTORY}{uuid4()}.mp4"
+        s3_url = upload_to_s3(video_path, BUCKET_NAME, s3_file_name)
+        
         background_tasks.add_task(process_video, video_path, model, result_file_path)
         
-        return JSONResponse(content={"message": "업로드가 완료되었습니다. 비디오 처리 중입니다.", "video_id": video_id})
+        # 업로드 후 원본 비디오 파일 삭제
+        os.remove(video_path)
+        
+        return JSONResponse(content={"message": "업로드가 완료되었습니다. 비디오 처리 중입니다.", "video_id": video_id, "s3_url": s3_url})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -171,10 +211,13 @@ async def get_result(video_id: str):
         result_file_path = os.path.join(temp_dir, f'result_{video_id}.json')
         
         if not os.path.exists(result_file_path):
-            raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
+            raise HTTPException(status_code=404, detail="결果를 찾을 수 없습니다.")
         
         with open(result_file_path, 'r') as f:
             result = json.load(f)
+        
+        # 결과 파일 읽은 후 삭제
+        os.remove(result_file_path)
         
         return JSONResponse(content=result)
     except Exception as e:
