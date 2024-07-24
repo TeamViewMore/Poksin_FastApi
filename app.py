@@ -173,8 +173,12 @@ def process_video(video_path, model, result_file_path):
     
     with open(result_file_path, 'w') as f:
         json.dump({"segments": segments_info}, f)
+    
+    # 로컬 파일 삭제
+    for file_path in saved_segments:
+        os.remove(file_path)
 
-@app.post("/detect_violence/")
+@app.post("/detect-violence/")
 async def detect_violence_in_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     try:
         temp_dir = os.path.join(os.getcwd(), 'temp')
@@ -193,6 +197,9 @@ async def detect_violence_in_video(background_tasks: BackgroundTasks, file: Uplo
         
         background_tasks.add_task(process_video, video_path, model, result_file_path)
         
+        # 업로드 후 원본 비디오 파일 삭제
+        os.remove(video_path)
+        
         return JSONResponse(content={"message": "업로드가 완료되었습니다. 비디오 처리 중입니다.", "video_id": video_id, "s3_url": s3_url})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -208,6 +215,9 @@ async def get_result(video_id: str):
         
         with open(result_file_path, 'r') as f:
             result = json.load(f)
+        
+        # 결과 파일 읽은 후 삭제
+        os.remove(result_file_path)
         
         return JSONResponse(content=result)
     except Exception as e:
