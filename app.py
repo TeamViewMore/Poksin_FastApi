@@ -18,6 +18,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 import json
 import logging
+from models import EvidenceEntity, ViolenceSegment
 
 # Load .env file
 load_dotenv()
@@ -38,42 +39,11 @@ session = scoped_session(
         bind=engine
     )
 )
-Base = declarative_base()
-Base.query = session.query_property()
-
-class EvidenceEntity(Base):
-    __tablename__ = "EvidenceEntity"
-    
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    created_at = Column(DateTime(6), default=datetime.utcnow)
-    last_modified_at = Column(DateTime(6), default=datetime.utcnow, onupdate=datetime.utcnow)
-    description = Column(String(255))
-    done = Column(Boolean)
-    fileUrls = Column(Text)
-    title = Column(String(255))
-    category_id = Column(Integer)
-    user_id = Column(Integer)
-
-    segments = relationship("ViolenceSegment", back_populates="evidence", order_by="ViolenceSegment.id")
-
-    class Config:
-        orm_mode = True
-
-class ViolenceSegment(Base):
-    __tablename__ = "violence_segment"
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    evidence_id = Column(Integer, ForeignKey('EvidenceEntity.id'))
-    s3_url = Column(String(255))
-    duration = Column(Float)
-    
-    evidence = relationship("EvidenceEntity", back_populates="segments")
-    class Config:
-        orm_mode = True
-
-# Base.metadata.create_all(bind=engine)  # Uncomment to create new tables
 
 # Load pre-trained model
 model_path = os.path.abspath('./modelnew.h5')
+
+
 try:
     model = keras.models.load_model(model_path)
 except Exception as e:
