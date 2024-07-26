@@ -1,19 +1,61 @@
+import os
 import cv2
 import numpy as np
 import tensorflow as tf
-import keras
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from tensorflow import keras
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse
-from typing import List
-import os
-import json
 from uuid import uuid4
 import boto3
-from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker
+from datetime import datetime
+from sqlalchemy.orm import Session
+import json
 
 # .env 파일 로드
 load_dotenv()
+
+# 데이터베이스 설정
+DATABASE_URL = os.getenv("DATABASE_URL")
+BUCKET_NAME = os.getenv("BUCKET_NAME")
+
+# 환경 변수 확인
+if not DATABASE_URL or not BUCKET_NAME:
+    raise RuntimeError("DATABASE_URL and BUCKET_NAME must be set in the environment variables.")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class EvidenceEntity(Base):
+    __tablename__ = "evidenceentity"
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    description = Column(String(255))
+    done = Column(Boolean)
+    fileUrls = Column(Text)
+    title = Column(String(255))
+    category_id = Column(Integer)
+    user_id = Column(Integer)
+
+class ViolenceSegment(Base):
+    __tablename__ = "violence_segment"
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    evidence_id = Column(Integer, ForeignKey('evidenceentity.id'))
+    s3_url = Column(String(255))
+    duration = Column(Float)
+    evidence = relationship("EvidenceEntity", back_populates="segments")
+
+EvidenceEntity.segments = relationship("ViolenceSegment", order_by=ViolenceSegment.id, back_populates="evidence")
+
+Base.metadata.create_all(bind=engine)  # 새 테이블 생성
+
 
 # 모델 경로 설정
 model_path = os.path.abspath('./modelnew.h5')
@@ -28,7 +70,6 @@ app = FastAPI()
 
 # AWS S3 설정
 s3 = boto3.client('s3')
-BUCKET_NAME = 'poksin'
 DIRECTORY = 'video/'
 
 def upload_to_s3(file_path, bucket, s3_file_name):
@@ -42,8 +83,30 @@ def upload_to_s3(file_path, bucket, s3_file_name):
         raise HTTPException(status_code=500, detail="Credentials not available.")
     except PartialCredentialsError:
         raise HTTPException(status_code=500, detail="Incomplete credentials provided.")
+    except ClientError as e:
+        raise HTTPException(status_code=500, detail=f"ClientError: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def download_from_s3(file_name, download_path):
+    try:
+        if not BUCKET_NAME:
+            raise ValueError("BUCKET_NAME is not set")
+        s3.download_file(BUCKET_NAME, f"{DIRECTORY}{file_name}", download_path)
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == '403':
+            raise HTTPException(status_code=403, detail=f"Access denied to S3 bucket. Check your permissions: {e}")
+        elif error_code == '404':
+            raise HTTPException(status_code=404, detail=f"File not found in S3 bucket: {e}")
+        else:
+            raise HTTPException(status_code=500, detail=f"ClientError: {e}")
+    except NoCredentialsError:
+        raise HTTPException(status_code=500, detail="Credentials not available.")
+    except PartialCredentialsError:
+        raise HTTPException(status_code=500, detail="Incomplete credentials provided.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error downloading file from S3: {str(e)}")
 
 # 비디오 읽기 함수 (1초당 5프레임만 추출)
 def read_video(video_path):
@@ -134,8 +197,17 @@ def save_violence_segments(original_frames, violence_segments, output_path_templ
     
     return saved_segments
 
+# 요청 데이터 모델
+class EvidenceRequest(BaseModel):
+    evidence_id: int
+    file_name: str
+
 # 백그라운드 작업 함수
-def process_video(video_path, model, result_file_path):
+def process_video(evidence_id, file_name, model, result_file_path):
+    temp_dir = os.path.join(os.getcwd(), 'temp')
+    video_path = os.path.join(temp_dir, f'downloaded_video_{evidence_id}.mp4')
+    download_from_s3(file_name, video_path)
+    
     original_frames, sampled_frames, fps = read_video(video_path)
     
     if fps == 0:
@@ -144,11 +216,13 @@ def process_video(video_path, model, result_file_path):
     processed_frames = preprocess_frames(sampled_frames)
     violence_segments = detect_violence(processed_frames, model, merge_gap=5)
     
-    temp_dir = os.path.join(os.getcwd(), 'temp')
     output_path_template = os.path.join(temp_dir, 'violence_segment_{}.mp4')
     saved_segments = save_violence_segments(original_frames, violence_segments, output_path_template, fps)
     
     segments_info = []
+    db = SessionLocal()
+    evidence = db.query(EvidenceEntity).filter(EvidenceEntity.id == evidence_id).first()
+    print(evidence)
     for idx, (start, end) in enumerate(violence_segments):
         start_frame = start * 5
         end_frame = (end + 1) * 5 - 1
@@ -161,15 +235,28 @@ def process_video(video_path, model, result_file_path):
         duration = (end_frame - start_frame + 1) / fps  # 원본 프레임 기준 지속 시간 계산
         
         s3_file_name = f"{DIRECTORY}{uuid4()}.mp4"
-        s3_url = upload_to_s3(saved_segments[idx], BUCKET_NAME, s3_file_name)
+        segment_s3_url = upload_to_s3(saved_segments[idx], BUCKET_NAME, s3_file_name)
         
-        segments_info.append({
+        segment_info = {
             "segment_index": idx + 1,
             "start_frame": start_frame,
             "end_frame": end_frame,
             "duration": duration,
-            "s3_url": s3_url
-        })
+            "s3_url": segment_s3_url
+        }
+        
+        violence_segment = ViolenceSegment(
+            evidence_id=evidence.id,
+            s3_url=segment_info["s3_url"],
+            duration=segment_info["duration"]
+        )
+        db.add(violence_segment)
+        segments_info.append(segment_info)
+    
+    evidence.done = True
+    
+    db.commit()
+    db.close()
     
     with open(result_file_path, 'w') as f:
         json.dump({"segments": segments_info}, f)
@@ -177,41 +264,30 @@ def process_video(video_path, model, result_file_path):
     # 로컬 파일 삭제
     for file_path in saved_segments:
         os.remove(file_path)
+    os.remove(video_path)
 
 @app.post("/detect-violence/")
-async def detect_violence_in_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def detect_violence_in_video(background_tasks: BackgroundTasks, request: EvidenceRequest):
     try:
         temp_dir = os.path.join(os.getcwd(), 'temp')
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
-        video_id = str(uuid4())
-        video_path = os.path.join(temp_dir, f'uploaded_video_{video_id}.mp4')
-        result_file_path = os.path.join(temp_dir, f'result_{video_id}.json')
+        result_file_path = os.path.join(temp_dir, f'result_{request.evidence_id}.json')
         
-        with open(video_path, 'wb') as f:
-            f.write(await file.read())
+        background_tasks.add_task(process_video, request.evidence_id, request.file_name, model, result_file_path)
         
-        # 업로드한 원본 비디오를 S3에 저장
-        s3_file_name = f"{DIRECTORY}{uuid4()}.mp4"
-        s3_url = upload_to_s3(video_path, BUCKET_NAME, s3_file_name)
-        
-        background_tasks.add_task(process_video, video_path, model, result_file_path)
-        
-        # 업로드 후 원본 비디오 파일 삭제
-        os.remove(video_path)
-        
-        return JSONResponse(content={"message": "업로드가 완료되었습니다. 비디오 처리 중입니다.", "video_id": video_id, "s3_url": s3_url})
+        return JSONResponse(content={"message": "비디오 처리 중입니다.", "evidence_id": request.evidence_id, "file_name": request.file_name})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/result/{video_id}")
-async def get_result(video_id: str):
+@app.get("/result/{evidence_id}")
+async def get_result(evidence_id: int):
     try:
         temp_dir = os.path.join(os.getcwd(), 'temp')
-        result_file_path = os.path.join(temp_dir, f'result_{video_id}.json')
+        result_file_path = os.path.join(temp_dir, f'result_{evidence_id}.json')
         
         if not os.path.exists(result_file_path):
-            raise HTTPException(status_code=404, detail="결果를 찾을 수 없습니다.")
+            raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
         
         with open(result_file_path, 'r') as f:
             result = json.load(f)
