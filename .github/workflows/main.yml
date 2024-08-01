@@ -1,5 +1,4 @@
-name: afterglow-deploy CD
-
+name: Deploy FastAPI to Elastic Beanstalk
 on:
   push:
     branches:
@@ -47,6 +46,10 @@ jobs:
         with:
           aws_access_key: ${{secrets.AWS_ACCESS_KEY}} # (14) AWS 접근 키
           aws_secret_key: ${{secrets.AWS_SECRET_KEY}} # (15) AWS 비밀 키
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          BUCKET_NAME: ${{ secrets.BUCKET_NAME }}
           application_name: Fastapi-poksin # (16) 애플리케이션 이름
           environment_name: Fastapi-poksin-env # (17) 환경 이름
           version_label: github-action-${{steps.current-time.outputs.formattedTime}} # (18) 버전 레이블
