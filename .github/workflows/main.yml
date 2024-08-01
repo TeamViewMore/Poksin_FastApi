@@ -1,0 +1,55 @@
+name: afterglow-deploy CD
+
+on:
+  push:
+    branches:
+      - main # (1) 배포 브랜치 이름
+  workflow_dispatch: # (2) 수동 실행
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # (3) OS 환경
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2 # (4) 코드 체크아웃
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v3
+        with:
+          python-version: '3.10' # (5) Python 3.12 설정
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv # (6) 가상환경 생성
+          . venv/bin/activate # (7) 가상환경 활성화
+          pip install -r requirements.txt # (8) 종속성 설치
+
+      - name: Get current time
+        uses: 1466587594/get-current-time@v2
+        id: current-time
+        with:
+          format: YYYY-MM-DDTHH-mm-ss
+          utcOffset: "+09:00" # (9) 빌드 시점의 시간 확보
+
+      - name: Show Current Time
+        run: echo "CurrentTime=${{steps.current-time.outputs.formattedTime}}"
+        shell: bash # (10) 확보한 시간 보여주기
+
+      - name: Generate deployment package
+        run: |
+          mkdir -p deploy # (11) 배포 디렉토리 생성
+          rsync -av --progress --exclude=deploy . deploy/ # (12) 프로젝트 파일 복사
+          cd deploy && zip -r deploy.zip . # (13) 배포 파일 압축
+
+      - name: Beanstalk Deploy
+        uses: einaregilsson/beanstalk-deploy@v20
+        with:
+          aws_access_key: ${{secrets.AWS_ACCESS_KEY}} # (14) AWS 접근 키
+          aws_secret_key: ${{secrets.AWS_SECRET_KEY}} # (15) AWS 비밀 키
+          application_name: Fastapi-poksin # (16) 애플리케이션 이름
+          environment_name: Fastapi-poksin-env # (17) 환경 이름
+          version_label: github-action-${{steps.current-time.outputs.formattedTime}} # (18) 버전 레이블
+          region: ap-northeast-2 # (19) 배포 지역
+          deployment_package: deploy/deploy.zip # (20) 배포 패키지 경로
+          wait_for_environment_recovery: 180 # (21) 환경 복구 대기 시간
