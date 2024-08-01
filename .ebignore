@@ -1,0 +1,16 @@
+# Exclude the git directory
+.git/
+# Exclude Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Exclude local environment settings
+.env
+
+# Exclude test and development files
+tests/
+*.log
+
+# Exclude the deploy directory
+deploy/
