@@ -32,8 +32,6 @@ MANIFEST
 *.manifest
 *.spec
 
-*.ini
-alembic/
 temp/
 
 # Installer logs
@@ -134,6 +132,7 @@ ENV/
 env.bak/
 venv.bak/
 myvvenv/
+myvenv/
 myven/
 
 # Spyder project settings
