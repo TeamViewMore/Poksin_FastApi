@@ -29,17 +29,17 @@ Base = declarative_base()
 Base.query = session.query_property()
 
 class EvidenceEntity(Base):
-    __tablename__ = "EvidenceEntity"
+    __tablename__ = 'EvidenceEntity'
     
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    created_at = Column(DateTime(6), default=datetime.utcnow)
-    last_modified_at = Column(DateTime(6), default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime)
+    last_modified_at = Column(DateTime)
     description = Column(String(255))
-    done = Column(Boolean)
+    done = Column(Boolean, default=False)
     fileUrls = Column(Text)
     title = Column(String(255))
-    category_id = Column(Integer)
-    user_id = Column(Integer)
+    category_id = Column(Integer, ForeignKey('category.id'))
+    user_id = Column(Integer, ForeignKey('user.id'))
 
     segments = relationship("ViolenceSegment", back_populates="evidence", order_by="ViolenceSegment.id")
 
