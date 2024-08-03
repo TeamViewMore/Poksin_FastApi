@@ -64,19 +64,27 @@ DIRECTORY = 'video/'
 
 def upload_to_s3(file_path, bucket, s3_file_name):
     try:
+        logging.info(f"Uploading {file_path} to S3 bucket {bucket} as {s3_file_name}")
         s3.upload_file(file_path, bucket, s3_file_name)
         s3_url = f"https://{bucket}.s3.amazonaws.com/{s3_file_name}"
+        logging.info(f"Successfully uploaded to {s3_url}")
         return s3_url
     except FileNotFoundError:
+        logging.error("File not found.")
         raise HTTPException(status_code=500, detail="File not found.")
     except NoCredentialsError:
+        logging.error("Credentials not available.")
         raise HTTPException(status_code=500, detail="Credentials not available.")
     except PartialCredentialsError:
+        logging.error("Incomplete credentials provided.")
         raise HTTPException(status_code=500, detail="Incomplete credentials provided.")
     except ClientError as e:
+        logging.error(f"ClientError: {e}")
         raise HTTPException(status_code=500, detail=f"ClientError: {e}")
     except Exception as e:
+        logging.error(str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
 
 def download_from_s3(file_name, download_path):
     try:
@@ -189,65 +197,94 @@ class EvidenceRequest(BaseModel):
 logging.basicConfig(level=logging.INFO)
 
 def process_video(evidence_id, file_name, model, result_file_path, db_session):
+    logging.info(f"Start processing video: evidence_id={evidence_id}, file_name={file_name}")
     temp_dir = os.path.join(os.getcwd(), 'temp')
     video_path = os.path.join(temp_dir, f'downloaded_video_{evidence_id}.mp4')
-    download_from_s3(file_name, video_path)
     
-    original_frames, sampled_frames, fps = read_video(video_path)
-    
-    if fps == 0:
-        fps = 30
-    
-    processed_frames = preprocess_frames(sampled_frames)
-    violence_segments = detect_violence(processed_frames, model, merge_gap=5)
-    
-    output_path_template = os.path.join(temp_dir, 'violence_segment_{}.mp4')
-    saved_segments = save_violence_segments(original_frames, violence_segments, output_path_template, fps)
-    
-    segments_info = []
-    evidence = db_session.query(EvidenceEntity).filter(EvidenceEntity.id == evidence_id).first()
-    print(evidence)
-    print(evidence.id)
+    try:
+        download_from_s3(file_name, video_path)
+        logging.info(f"Downloaded video from S3: {video_path}")
+        
+        original_frames, sampled_frames, fps = read_video(video_path)
+        logging.info(f"Read video frames: total_frames={len(original_frames)}, sampled_frames={len(sampled_frames)}, fps={fps}")
+        
+        if fps == 0:
+            fps = 30
+        
+        processed_frames = preprocess_frames(sampled_frames)
+        logging.info(f"Preprocessed frames: {processed_frames.shape}")
+        
+        violence_segments = detect_violence(processed_frames, model, merge_gap=5)
+        logging.info(f"Detected violence segments: {violence_segments}")
+        
+        output_path_template = os.path.join(temp_dir, 'violence_segment_{}.mp4')
+        saved_segments = save_violence_segments(original_frames, violence_segments, output_path_template, fps)
+        logging.info(f"Saved violence segments: {saved_segments}")
+        
+        segments_info = []
+        evidence = db_session.query(EvidenceEntity).filter(EvidenceEntity.id == evidence_id).first()
+        if not evidence:
+            logging.error(f"EvidenceEntity with id {evidence_id} not found.")
+            raise HTTPException(status_code=404, detail="EvidenceEntity not found.")
+        logging.info(f"Queried evidence entity: {evidence}")
+        
+        for idx, (start, end) in enumerate(violence_segments):
+            start_frame = start * 5
+            end_frame = (end + 1) * 5 - 1
+            
+            if (end_frame - start_frame + 1) / fps < 1.0:
+                start_frame = max(start_frame - int(fps), 0)
+                end_frame = min(end_frame + int(fps), len(original_frames) - 1)
+            
+            duration = (end_frame - start_frame + 1) / fps
+            
+            s3_file_name = f"{DIRECTORY}{uuid4()}.mp4"
+            segment_s3_url = upload_to_s3(saved_segments[idx], BUCKET_NAME, s3_file_name)
+            logging.info(f"Uploaded segment to S3: {segment_s3_url}")
+            
+            segment_info = {
+                "segment_index": idx + 1,
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "duration": duration,
+                "s3_url": segment_s3_url
+            }
+            
+            violence_segment = ViolenceSegment(
+                evidence_id=evidence.id,
+                s3_url=segment_info["s3_url"],
+                duration=segment_info["duration"]
+            )
+            db_session.add(violence_segment)
+            segments_info.append(segment_info)
+        
+        try:
+            evidence.done = True
+            db_session.commit()
+            logging.info(f"Successfully updated evidence.done for evidence_id={evidence_id}")
+            
+            # 데이터베이스 값 확인
+            updated_evidence = db_session.query(EvidenceEntity).filter(EvidenceEntity.id == evidence_id).first()
+            logging.info(f"Updated evidence.done value: {updated_evidence.done}")
+        except Exception as e:
+            db_session.rollback()
+            logging.error(f"Error updating evidence.done: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error updating evidence.done")
+        
+        with open(result_file_path, 'w') as f:
+            json.dump({"segments": segments_info}, f)
+        logging.info(f"Saved results to file: {result_file_path}")
+        
+        for file_path in saved_segments:
+            os.remove(file_path)
+        logging.info(f"Deleted saved segments: {saved_segments}")
+        
+        os.remove(video_path)
+        logging.info(f"Deleted original video: {video_path}")
+    except Exception as e:
+        logging.error(f"Error processing video: {str(e)}")
+        raise e
 
-    for idx, (start, end) in enumerate(violence_segments):
-        start_frame = start * 5
-        end_frame = (end + 1) * 5 - 1
-        
-        if (end_frame - start_frame + 1) / fps < 1.0:
-            start_frame = max(start_frame - int(fps), 0)
-            end_frame = min(end_frame + int(fps), len(original_frames) - 1)
-        
-        duration = (end_frame - start_frame + 1) / fps
-        
-        s3_file_name = f"{DIRECTORY}{uuid4()}.mp4"
-        segment_s3_url = upload_to_s3(saved_segments[idx], BUCKET_NAME, s3_file_name)
-        
-        segment_info = {
-            "segment_index": idx + 1,
-            "start_frame": start_frame,
-            "end_frame": end_frame,
-            "duration": duration,
-            "s3_url": segment_s3_url
-        }
-        
-        violence_segment = ViolenceSegment(
-            evidence_id=evidence.id,
-            s3_url=segment_info["s3_url"],
-            duration=segment_info["duration"]
-        )
-        db_session.add(violence_segment)
-        segments_info.append(segment_info)
-    
-    evidence.done = True
-    
-    db_session.commit()
-    
-    with open(result_file_path, 'w') as f:
-        json.dump({"segments": segments_info}, f)
-    
-    for file_path in saved_segments:
-        os.remove(file_path)
-    os.remove(video_path)
 
 @app.post("/detect-violence/")
 async def detect_violence_in_video(background_tasks: BackgroundTasks, request: EvidenceRequest, db: Session = Depends(get_db)):
