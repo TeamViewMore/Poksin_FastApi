@@ -1,3 +1,4 @@
+
 import os
 import cv2
 import numpy as np
@@ -10,18 +11,26 @@ from uuid import uuid4
 import boto3
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, ForeignKey, Text, Boolean, text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker, scoped_session
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, scoped_session, Session
 from datetime import datetime
-from sqlalchemy.orm import Session
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 from models import EvidenceEntity, ViolenceSegment
 
 # Load .env file
 load_dotenv()
+
+# Logging configuration
+log_file_path = 'fastapi.log'
+handler = RotatingFileHandler(log_file_path, maxBytes=1000000, backupCount=3)
+logging.basicConfig(
+    handlers=[handler],
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -32,17 +41,10 @@ if not DATABASE_URL or not BUCKET_NAME:
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-session = scoped_session(
-    sessionmaker(
-        autocommit=False,
-        autoflush=False,
-        bind=engine
-    )
-)
+session = scoped_session(SessionLocal)
 
 # Load pre-trained model
 model_path = os.path.abspath('./modelnew.h5')
-
 
 try:
     model = keras.models.load_model(model_path)
@@ -64,46 +66,52 @@ DIRECTORY = 'video/'
 
 def upload_to_s3(file_path, bucket, s3_file_name):
     try:
-        logging.info(f"Uploading {file_path} to S3 bucket {bucket} as {s3_file_name}")
+        logger.info(f"Uploading {file_path} to S3 bucket {bucket} as {s3_file_name}")
         s3.upload_file(file_path, bucket, s3_file_name)
         s3_url = f"https://{bucket}.s3.amazonaws.com/{s3_file_name}"
-        logging.info(f"Successfully uploaded to {s3_url}")
+        logger.info(f"Successfully uploaded to {s3_url}")
         return s3_url
     except FileNotFoundError:
-        logging.error("File not found.")
+        logger.error("File not found.")
         raise HTTPException(status_code=500, detail="File not found.")
     except NoCredentialsError:
-        logging.error("Credentials not available.")
+        logger.error("Credentials not available.")
         raise HTTPException(status_code=500, detail="Credentials not available.")
     except PartialCredentialsError:
-        logging.error("Incomplete credentials provided.")
+        logger.error("Incomplete credentials provided.")
         raise HTTPException(status_code=500, detail="Incomplete credentials provided.")
     except ClientError as e:
-        logging.error(f"ClientError: {e}")
+        logger.error(f"ClientError: {e}")
         raise HTTPException(status_code=500, detail=f"ClientError: {e}")
     except Exception as e:
-        logging.error(str(e))
+        logger.error(str(e))
         raise HTTPException(status_code=500, detail=str(e))
-
 
 def download_from_s3(file_name, download_path):
     try:
         if not BUCKET_NAME:
             raise ValueError("BUCKET_NAME is not set")
         s3.download_file(BUCKET_NAME, f"{DIRECTORY}{file_name}", download_path)
+        logger.info(f"Downloaded {file_name} from S3 to {download_path}")
     except ClientError as e:
         error_code = e.response['Error']['Code']
         if error_code == '403':
+            logger.error(f"Access denied to S3 bucket. Check your permissions: {e}")
             raise HTTPException(status_code=403, detail=f"Access denied to S3 bucket. Check your permissions: {e}")
         elif error_code == '404':
+            logger.error(f"File not found in S3 bucket: {e}")
             raise HTTPException(status_code=404, detail=f"File not found in S3 bucket: {e}")
         else:
+            logger.error(f"ClientError: {e}")
             raise HTTPException(status_code=500, detail=f"ClientError: {e}")
     except NoCredentialsError:
+        logger.error("Credentials not available.")
         raise HTTPException(status_code=500, detail="Credentials not available.")
     except PartialCredentialsError:
+        logger.error("Incomplete credentials provided.")
         raise HTTPException(status_code=500, detail="Incomplete credentials provided.")
     except Exception as e:
+        logger.error(f"Error downloading file from S3: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error downloading file from S3: {str(e)}")
 
 # Video processing functions
@@ -137,7 +145,7 @@ def detect_violence(frames, model, merge_gap=5):
     violence_segments = []
     current_segment = None
     num_frames = len(frames)
-    
+
     for i in range(num_frames):
         frame = np.expand_dims(frames[i], axis=0)
         prediction = model.predict(frame)
@@ -152,7 +160,7 @@ def detect_violence(frames, model, merge_gap=5):
                 current_segment = None
     if current_segment is not None:
         violence_segments.append(current_segment)
-    
+
     merge_gap_frames = merge_gap * 5
     merged_segments = []
     i = 0
@@ -163,7 +171,7 @@ def detect_violence(frames, model, merge_gap=5):
             i += 1
         merged_segments.append([start, end])
         i += 1
-    
+
     return merged_segments
 
 def save_violence_segments(original_frames, violence_segments, output_path_template, fps):
@@ -172,14 +180,14 @@ def save_violence_segments(original_frames, violence_segments, output_path_templ
     for idx, (start, end) in enumerate(violence_segments):
         output_path = output_path_template.format(idx + 1)
         video = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-        
+
         start_frame = start * 5
         end_frame = (end + 1) * 5 - 1
-        
+
         if (end_frame - start_frame + 1) / fps < 1.0:
             start_frame = max(start_frame - int(fps), 0)
             end_frame = min(end_frame + int(fps), len(original_frames) - 1)
-        
+
         for i in range(start_frame, end_frame + 1):
             if i < len(original_frames):
                 frame = original_frames[i]
@@ -187,61 +195,59 @@ def save_violence_segments(original_frames, violence_segments, output_path_templ
                 video.write(frame)
         video.release()
         saved_segments.append(output_path)
-    
+
     return saved_segments
 
 class EvidenceRequest(BaseModel):
     evidence_id: int
     file_name: str
 
-logging.basicConfig(level=logging.INFO)
-
 def process_video(evidence_id, file_name, model, result_file_path, db_session):
-    logging.info(f"Start processing video: evidence_id={evidence_id}, file_name={file_name}")
+    logger.info(f"Start processing video: evidence_id={evidence_id}, file_name={file_name}")
     temp_dir = os.path.join(os.getcwd(), 'temp')
     video_path = os.path.join(temp_dir, f'downloaded_video_{evidence_id}.mp4')
-    
+
     try:
         download_from_s3(file_name, video_path)
-        logging.info(f"Downloaded video from S3: {video_path}")
-        
+        logger.info(f"Downloaded video from S3: {video_path}")
+
         original_frames, sampled_frames, fps = read_video(video_path)
-        logging.info(f"Read video frames: total_frames={len(original_frames)}, sampled_frames={len(sampled_frames)}, fps={fps}")
-        
+        logger.info(f"Read video frames: total_frames={len(original_frames)}, sampled_frames={len(sampled_frames)}, fps={fps}")
+
         if fps == 0:
             fps = 30
-        
+
         processed_frames = preprocess_frames(sampled_frames)
-        logging.info(f"Preprocessed frames: {processed_frames.shape}")
-        
+        logger.info(f"Preprocessed frames: {processed_frames.shape}")
+
         violence_segments = detect_violence(processed_frames, model, merge_gap=5)
-        logging.info(f"Detected violence segments: {violence_segments}")
-        
+        logger.info(f"Detected violence segments: {violence_segments}")
+
         output_path_template = os.path.join(temp_dir, 'violence_segment_{}.mp4')
         saved_segments = save_violence_segments(original_frames, violence_segments, output_path_template, fps)
-        logging.info(f"Saved violence segments: {saved_segments}")
-        
+        logger.info(f"Saved violence segments: {saved_segments}")
+
         segments_info = []
         evidence = db_session.query(EvidenceEntity).filter(EvidenceEntity.id == evidence_id).first()
         if not evidence:
-            logging.error(f"EvidenceEntity with id {evidence_id} not found.")
+            logger.error(f"EvidenceEntity with id {evidence_id} not found.")
             raise HTTPException(status_code=404, detail="EvidenceEntity not found.")
-        logging.info(f"Queried evidence entity: {evidence}")
-        
+        logger.info(f"Queried evidence entity: {evidence}")
+
         for idx, (start, end) in enumerate(violence_segments):
             start_frame = start * 5
             end_frame = (end + 1) * 5 - 1
-            
+
             if (end_frame - start_frame + 1) / fps < 1.0:
                 start_frame = max(start_frame - int(fps), 0)
                 end_frame = min(end_frame + int(fps), len(original_frames) - 1)
-            
+
             duration = (end_frame - start_frame + 1) / fps
-            
+
             s3_file_name = f"{DIRECTORY}{uuid4()}.mp4"
             segment_s3_url = upload_to_s3(saved_segments[idx], BUCKET_NAME, s3_file_name)
-            logging.info(f"Uploaded segment to S3: {segment_s3_url}")
-            
+            logger.info(f"Uploaded segment to S3: {segment_s3_url}")
+
             segment_info = {
                 "segment_index": idx + 1,
                 "start_frame": start_frame,
@@ -249,7 +255,7 @@ def process_video(evidence_id, file_name, model, result_file_path, db_session):
                 "duration": duration,
                 "s3_url": segment_s3_url
             }
-            
+
             violence_segment = ViolenceSegment(
                 evidence_id=evidence.id,
                 s3_url=segment_info["s3_url"],
@@ -257,34 +263,32 @@ def process_video(evidence_id, file_name, model, result_file_path, db_session):
             )
             db_session.add(violence_segment)
             segments_info.append(segment_info)
-        
+
         try:
-            evidence.done = True
+            evidence.done = 1
             db_session.commit()
-            logging.info(f"Successfully updated evidence.done for evidence_id={evidence_id}")
-            
-            # 데이터베이스 값 확인
+            logger.info(f"Successfully updated evidence.done for evidence_id={evidence_id}")
+
             updated_evidence = db_session.query(EvidenceEntity).filter(EvidenceEntity.id == evidence_id).first()
-            logging.info(f"Updated evidence.done value: {updated_evidence.done}")
+            logger.info(f"Updated evidence.done value: {updated_evidence.done}")
         except Exception as e:
             db_session.rollback()
-            logging.error(f"Error updating evidence.done: {str(e)}")
+            logger.error(f"Error updating evidence.done: {str(e)}")
             raise HTTPException(status_code=500, detail="Error updating evidence.done")
-        
+
         with open(result_file_path, 'w') as f:
             json.dump({"segments": segments_info}, f)
-        logging.info(f"Saved results to file: {result_file_path}")
-        
+        logger.info(f"Saved results to file: {result_file_path}")
+
         for file_path in saved_segments:
             os.remove(file_path)
-        logging.info(f"Deleted saved segments: {saved_segments}")
-        
-        os.remove(video_path)
-        logging.info(f"Deleted original video: {video_path}")
-    except Exception as e:
-        logging.error(f"Error processing video: {str(e)}")
-        raise e
+        logger.info(f"Deleted saved segments: {saved_segments}")
 
+        os.remove(video_path)
+        logger.info(f"Deleted original video: {video_path}")
+    except Exception as e:
+        logger.error(f"Error processing video: {str(e)}")
+        raise e
 
 @app.post("/detect-violence/")
 async def detect_violence_in_video(background_tasks: BackgroundTasks, request: EvidenceRequest, db: Session = Depends(get_db)):
@@ -293,9 +297,9 @@ async def detect_violence_in_video(background_tasks: BackgroundTasks, request: E
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
         result_file_path = os.path.join(temp_dir, f'result_{request.evidence_id}.json')
-        
+
         background_tasks.add_task(process_video, request.evidence_id, request.file_name, model, result_file_path, db)
-        
+
         return JSONResponse(content={"message": "비디오 처리 중입니다.", "evidence_id": request.evidence_id, "file_name": request.file_name})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -305,15 +309,15 @@ async def get_result(evidence_id: int):
     try:
         temp_dir = os.path.join(os.getcwd(), 'temp')
         result_file_path = os.path.join(temp_dir, f'result_{evidence_id}.json')
-        
+
         if not os.path.exists(result_file_path):
             raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
-        
+
         with open(result_file_path, 'r') as f:
             result = json.load(f)
-        
+
         os.remove(result_file_path)
-        
+
         return JSONResponse(content=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
