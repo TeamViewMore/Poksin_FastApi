@@ -1,4 +1,3 @@
-
 import os
 import cv2
 import numpy as np
@@ -18,6 +17,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 from models import EvidenceEntity, ViolenceSegment
+import subprocess
 
 # Load .env file
 load_dotenv()
@@ -64,10 +64,50 @@ def get_db():
 s3 = boto3.client('s3')
 DIRECTORY = 'video/'
 
+def convert_to_mp4(input_file, output_file):
+    """
+    Convert the input video file to MP4 format using ffmpeg.
+    """
+    try:
+        ffmpeg_path = '/usr/bin/ffmpeg'  # 명시적으로 ffmpeg 경로 지정
+        command = [
+            ffmpeg_path,
+            '-i', input_file,
+            '-c:v', 'libx264',  # H.264 codec
+            '-preset', 'medium',  # Adjust the preset for quality/speed trade-off
+            '-crf', '23',  # Constant Rate Factor, adjust for quality
+            '-c:a', 'aac',  # Audio codec
+            '-strict', 'experimental',
+            '-b:a', '192k',
+            output_file
+        ]
+        subprocess.run(command, check=True)
+        logger.info(f"Video conversion completed: {output_file}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ffmpeg failed with error: {e}")
+        raise HTTPException(status_code=500, detail="Video conversion failed.")
+    except FileNotFoundError as e:
+        logger.error(f"File not found during conversion: {e}")
+        raise HTTPException(status_code=500, detail="File not found during conversion.")
+
 def upload_to_s3(file_path, bucket, s3_file_name):
     try:
-        logger.info(f"Uploading {file_path} to S3 bucket {bucket} as {s3_file_name}")
-        s3.upload_file(file_path, bucket, s3_file_name)
+        temp_dir = os.path.join(os.getcwd(), 'temp')
+        converted_file_path = os.path.join(temp_dir, "converted_video.mp4")
+        convert_to_mp4(file_path, converted_file_path)
+
+        if not os.path.exists(converted_file_path):
+            logger.error(f"Converted file not found: {converted_file_path}")
+            raise HTTPException(status_code=500, detail="Converted file not found.")
+
+        logger.info(f"Uploading {converted_file_path} to S3 bucket {bucket} as {s3_file_name}")
+
+        # Add ExtraArgs to specify content type
+        s3.upload_file(converted_file_path, bucket, s3_file_name, ExtraArgs={'ContentType': 'video/mp4'})
+
+        # Clean up the converted file
+        os.remove(converted_file_path)
+
         s3_url = f"https://{bucket}.s3.amazonaws.com/{s3_file_name}"
         logger.info(f"Successfully uploaded to {s3_url}")
         return s3_url
@@ -82,7 +122,7 @@ def upload_to_s3(file_path, bucket, s3_file_name):
         raise HTTPException(status_code=500, detail="Incomplete credentials provided.")
     except ClientError as e:
         logger.error(f"ClientError: {e}")
-        raise HTTPException(status_code=500, detail=f"ClientError: {e}")
+        raise HTTPException(status_code=500, detail="ClientError: {e}")
     except Exception as e:
         logger.error(str(e))
         raise HTTPException(status_code=500, detail=str(e))
