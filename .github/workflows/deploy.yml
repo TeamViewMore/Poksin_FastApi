@@ -3,7 +3,7 @@ name: Deploy to Elastic Beanstalk (Docker)
 on:
   push:
     branches:
-      - main  # main 브랜치에 푸시될 때만 실행
+      - deploy  # main 브랜치에 푸시될 때만 실행
 
 jobs:
   deploy:
