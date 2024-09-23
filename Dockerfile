@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 4. 애플리케이션 코드 및 Alembic 스크립트 복사
 COPY . .
 
+ARG DATABASE_URL
+ENV DATABASE_URL=${DATABASE_URL}
+
 # 5. 데이터베이스 마이그레이션 실행 (Alembic)
 RUN alembic upgrade head
 
