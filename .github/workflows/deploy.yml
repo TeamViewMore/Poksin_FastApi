@@ -39,7 +39,7 @@ jobs:
         aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
         aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
         application_name: fastapi
-        environment_name: Fastapi-env-1
+        environment_name: Fastapi-env
         version_label: ${{ github.sha }}-${{ github.run_number }}-$(date +%s)
         region: ${{ secrets.AWS_REGION }}
         s3_bucket: ${{ secrets.BUCKET_NAME }}
