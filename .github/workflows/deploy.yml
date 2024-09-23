@@ -42,6 +42,5 @@ jobs:
         environment_name: Fastapi-env
         version_label: ${{ github.sha }}-${{ github.run_number }}
         region: ${{ secrets.AWS_REGION }}
-        s3_bucket: ${{ secrets.BUCKET_NAME }}
         deployment_package: Dockerrun.aws.json  # 배포 파일 설정 deployment_package: Dockerrun.aws.json  # 배포 파일 설정
         use_existing_version_if_available: true
