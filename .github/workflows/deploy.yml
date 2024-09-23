@@ -23,10 +23,11 @@ jobs:
     - name: Log in to Amazon ECR
       run: |
           aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
-  
-    - name: Build Docker image
+    
+    - name: Build Docker image and run Alembic migrations
       run: |
-            docker build -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY }}:latest .
+            docker build --build-arg DATABASE_URL=${{ secrets.DATABASE_URL }} -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY }}:latest .
+            docker run --env DATABASE_URL=${{ secrets.DATABASE_URL }} ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY }}:latest alembic upgrade head
     
     - name: Push Docker image to Amazon ECR
       run: |
