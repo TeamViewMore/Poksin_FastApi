@@ -18,4 +18,4 @@ ENV DATABASE_URL=${DATABASE_URL}
 RUN alembic upgrade head
 
 # 6. FastAPI 서버 실행
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]
