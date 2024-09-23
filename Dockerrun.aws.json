@@ -1,7 +1,7 @@
 {
   "AWSEBDockerrunVersion": "1",
   "Image": {
-    "Name": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY }}:latest",
+    "Name": "205930648835.dkr.ecr.ap-northeast-2.amazonaws.com/docker:latest",
     "Update": "true"
   },
   "Ports": [
