@@ -15,7 +15,7 @@ ARG DATABASE_URL
 ENV DATABASE_URL=${DATABASE_URL}
 
 # 5. 데이터베이스 마이그레이션 실행 (Alembic)
-#RUN alembic upgrade head
+RUN alembic upgrade head
 
 # 6. FastAPI 서버 실행
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]
